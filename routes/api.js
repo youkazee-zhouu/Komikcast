@@ -260,7 +260,7 @@ router.get('/manga/:slug', async (req, res) => {
                 { genres: { $in: manga.genres }, _id: { $ne: manga._id } },
                 { views: -1 },
                 0,
-                4
+                6
             );
         }
 
