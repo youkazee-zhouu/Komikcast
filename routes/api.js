@@ -4,7 +4,6 @@ const Manga = require('../models/Manga');
 const Chapter = require('../models/Chapter');
 const User = require('../models/User');
 const mongoose = require('mongoose');
-const { enqueue, getJobStatus, getQueueStats, checkIfStale } = require('../services/scraperQueue');
 
 // ==========================================
 // HELPER FUNCTIONS
@@ -261,7 +260,7 @@ router.get('/manga/:slug', async (req, res) => {
                 { genres: { $in: manga.genres }, _id: { $ne: manga._id } },
                 { views: -1 },
                 0,
-                4
+                6
             );
         }
 
@@ -812,115 +811,6 @@ router.post('/settings/whatsapp', async (req, res) => {
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
-});
-
-// ==========================================
-// AUTO-SCRAPE ENDPOINTS (Dipanggil Frontend)
-// ==========================================
-
-// Simple rate limit: 5 req / 10 detik per IP
-const _rateMap = new Map();
-function scrapeRateLimit(req, res, next) {
-    const ip  = req.ip || req.headers['x-forwarded-for'] || 'x';
-    const now = Date.now();
-    const arr = (_rateMap.get(ip) || []).filter(t => now - t < 10_000);
-    arr.push(now);
-    _rateMap.set(ip, arr);
-    if (arr.length > 5) return res.status(429).json({ success: false, message: 'Terlalu banyak request, tunggu sebentar.' });
-    next();
-}
-setInterval(() => _rateMap.clear(), 60_000).unref();
-
-/**
- * POST /api/scrape/manga
- * Body: { slug: "one-piece" }
- * Dipanggil frontend saat buka halaman detail manga.
- * - Manga tidak ada → scrape segera
- * - Manga ada tapi stale (> 6 jam) → scrape background
- * - Manga masih fresh → skip
- */
-router.post('/scrape/manga', scrapeRateLimit, async (req, res) => {
-    try {
-        const { slug } = req.body;
-        if (!slug) return res.status(400).json({ success: false, message: 'slug wajib diisi.' });
-
-        const { needsScrape, reason, hoursSinceUpdate } = await checkIfStale(slug);
-
-        if (!needsScrape) {
-            return res.json({ success: true, status: 'fresh', jobId: null });
-        }
-
-        // Jika manga belum ada sama sekali, tidak bisa scrape (butuh sourceUrl)
-        if (reason === 'not_found') {
-            return res.json({ success: true, status: 'not_found', jobId: null,
-                message: 'Manga belum ada di database. Tambahkan manual via admin.' });
-        }
-
-        const job = enqueue('manga', { slug });
-        return res.json({
-            success: true,
-            status: 'queued',
-            jobId: job.id,
-            reason,
-            hoursSinceUpdate: hoursSinceUpdate || null,
-        });
-
-    } catch (err) {
-        if (err.message.includes('penuh')) return res.status(503).json({ success: false, message: err.message });
-        errorResponse(res, err.message);
-    }
-});
-
-/**
- * POST /api/scrape/chapter
- * Body: { mangaSlug: "one-piece", chapterSlug: "chapter-1100" }
- * Dipanggil frontend saat buka halaman baca dan gambar kosong.
- */
-router.post('/scrape/chapter', scrapeRateLimit, async (req, res) => {
-    try {
-        const { mangaSlug, chapterSlug } = req.body;
-        if (!mangaSlug || !chapterSlug) {
-            return res.status(400).json({ success: false, message: 'mangaSlug dan chapterSlug wajib diisi.' });
-        }
-
-        // Cek apakah gambar sudah ada
-        const existing = await Chapter.findOne({ mangaSlug, chapterSlug }).select('images').lean();
-        if (existing?.images?.length > 0) {
-            return res.json({ success: true, status: 'ready', jobId: null });
-        }
-
-        // Pastikan chapter ada di daftar manga
-        const manga = await Manga.findOne({ slug: mangaSlug }).select('chapters').lean();
-        const chap  = manga?.chapters?.find(c => c.slug === chapterSlug);
-        if (!chap?.url) {
-            return res.status(404).json({ success: false, message: 'Chapter tidak ditemukan di database manga.' });
-        }
-
-        const job = enqueue('chapter', { mangaSlug, chapterSlug });
-        return res.json({ success: true, status: 'queued', jobId: job.id });
-
-    } catch (err) {
-        if (err.message.includes('penuh')) return res.status(503).json({ success: false, message: err.message });
-        errorResponse(res, err.message);
-    }
-});
-
-/**
- * GET /api/scrape/status/:jobId
- * Frontend polling untuk cek apakah scrape selesai.
- */
-router.get('/scrape/status/:jobId', (req, res) => {
-    const job = getJobStatus(req.params.jobId);
-    if (!job) return res.status(404).json({ success: false, message: 'Job tidak ditemukan.' });
-    res.json({ success: true, ...job });
-});
-
-/**
- * GET /api/scrape/queue
- * Statistik antrian (untuk admin panel).
- */
-router.get('/scrape/queue', (req, res) => {
-    res.json({ success: true, stats: getQueueStats() });
 });
 
 module.exports = router;
