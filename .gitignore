@@ -1,0 +1,13 @@
+node_modules
+.env
+bulk-scraper.js
+url.txt
+auto_ch.js
+autoch.js
+500.js
+chapter-worker.js
+get_links.py
+google-key.json
+komik.txt
+text.txt
+.idx
